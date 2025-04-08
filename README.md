@@ -2,6 +2,8 @@
 
 An Augmented Reality Sudoku solver that uses computer vision and machine learning to solve Sudoku puzzles in real-time. The application captures a Sudoku puzzle using a webcam, processes it using OpenCV, and overlays the solution onto the original image.
 
+https://github.com/user-attachments/assets/340471a7-90d5-4bc5-a00f-66f15f9fc6b2
+
 ## How It Works
 
 1. **Grid Detection**
