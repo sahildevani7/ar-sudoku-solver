@@ -19,8 +19,10 @@ def preprocess(img):
 
 def find_largest_contour(image):
     '''
-        The sudoku box will have the largest contour area. This funciton checks for the contour with the largest area and returns the
-        largest contour
+        The sudoku box will have the largest contour area. This function checks for the
+        largest contour that approximates to a quadrilateral (4 vertices after approxPolyDP)
+        and returns that simplified 4-point polygon - any other shape (a hand, a stray dark
+        region, text on a page) is skipped even if its area is bigger.
     '''
     contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     max_area = 0
@@ -28,10 +30,12 @@ def find_largest_contour(image):
 
     for contour in contours:
         area = cv2.contourArea(contour)
-        if area > config.CONTOUR_MIN_AREA:
-            if area > max_area:
+        if area > config.CONTOUR_MIN_AREA and area > max_area:
+            perimeter = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+            if len(approx) == 4:
                 max_area = area
-                biggest = contour
+                biggest = approx
     return biggest
 
 

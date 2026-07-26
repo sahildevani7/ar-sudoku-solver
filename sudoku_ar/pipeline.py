@@ -151,11 +151,18 @@ class SudokuPipeline:
             self.reset()
 
 
-def run():
+def run(source=None):
     recognizer = DigitRecognizer()
     pipeline = SudokuPipeline(recognizer)
 
-    cap = Camera(config.CAMERA_INDEX).start()
+    if source is None:
+        # Camera's background-thread "always serve the newest frame" behavior only makes sense
+        # against a live camera outrunning processing speed - a video file already plays back
+        # deterministically frame-by-frame, and racing a reader thread through it would just
+        # skip almost the whole file before the main loop got to see any of it.
+        cap = Camera(config.CAMERA_INDEX).start()
+    else:
+        cap = cv2.VideoCapture(source)
 
     while cap.isOpened():
         start_time = time.time()

@@ -5,3 +5,5 @@ images/
 __pycache__/
 model.py
 digitsImag/
+.DS_Store
+.pytest_cache/
