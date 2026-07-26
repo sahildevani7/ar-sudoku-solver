@@ -45,7 +45,10 @@ class DigitRecognizer:
 
     def extract_digit(self, grid):
         '''
-            This function takes the sudoku grid, identifies the digits in the image and returns a numpy matrix of the predicted sudoku puzzle.
+            This function takes the sudoku grid, identifies the digits in the image and returns:
+              - a numpy matrix of the predicted sudoku puzzle
+              - a bool that is False if any predicted cell's softmax confidence fell below
+                config.MIN_CONFIDENCE, signalling the whole read should be treated as unreliable
         '''
         posx = grid.shape[1] // 9
         posy = grid.shape[0] // 9
@@ -83,12 +86,15 @@ class DigitRecognizer:
                     cell_positions.append((i, j))
                     cell_batch.append(padded_digit.reshape(digit_size, digit_size, 1))
 
+        confident = True
         if cell_batch:
             batch = np.stack(cell_batch, axis=0)
+            probs = self.model(batch, training=False).numpy()
+            confident = bool(np.all(probs.max(axis=1) >= config.MIN_CONFIDENCE))
             # the model contains 9 classes which start from 0 to 8. The digits in sudoku however range from 1-9.
             # So we add 1 to the prediciton to get the correct number.
-            preds = self.model(batch, training=False).numpy().argmax(axis=1) + 1
+            preds = probs.argmax(axis=1) + 1
             for (i, j), pred in zip(cell_positions, preds):
                 sudoku[i][j] = pred
 
-        return sudoku
+        return sudoku, confident

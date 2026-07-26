@@ -14,3 +14,12 @@ DIGIT_SIZE = 32
 DIGIT_CROP_BORDER = 3
 GRID_BORDER_CROP_RATIO = 0.12
 EMPTY_CELL_WHITE_RATIO = 0.97
+MIN_CONFIDENCE = 0.85  # reject a whole read if any predicted cell falls below this softmax confidence
+
+# Acquisition state machine
+CONFIRM_FRAMES = 3       # consecutive identical reads required before locking onto a puzzle
+LOST_FRAMES = 15         # frames the grid may be briefly absent/occluded before releasing lock
+REJECT_COOLDOWN_FRAMES = 45  # frames to ignore a read that already failed to solve, so it isn't retried every frame
+MIN_GIVENS = 17          # the minimum clues a uniquely-solvable sudoku can have; fewer implies a bad read
+                         # (this solver's runtime is highly sensitive to sparse/near-empty grids, so this
+                         # also guards against handing it a pathological case that could hang for a long time)
