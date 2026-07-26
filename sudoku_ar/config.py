@@ -38,6 +38,20 @@ MIN_CONFIDENCE = 0.75  # reject a whole read if any predicted cell falls below t
 DIGIT_TARGET_SIZE = 20        # longest side of the digit, within the DIGIT_SIZE canvas
 DIGIT_MIN_AREA_RATIO = 0.008  # ink blobs smaller than this fraction of a cell are speckle
 DIGIT_MIN_HEIGHT_RATIO = 0.25 # ...and a real digit is at least this tall relative to the cell
+
+# Printed digits within one puzzle are all about the same height, so anything markedly shorter
+# than the typical candidate is not a digit - on a phone screen it is usually a streak of glare.
+# Measured on a real capture: genuine digits filled 0.49-0.60 of a cell, glare streaks 0.45-0.46.
+# Judging against this grid's own median rather than a fixed ratio keeps it working across
+# different digit sizes and fonts. The margin here is narrow and tuned on limited data; if real
+# digits start disappearing, lower it.
+DIGIT_MIN_RELATIVE_HEIGHT = 0.88
+
+# Grid line positions are fitted to find the true cell boundaries. The detected quad rarely lands
+# exactly on the puzzle's edges, and assuming nine even slices then drifts by a whole row partway
+# down the grid. Fitting the ruling instead tolerates a warp that overshoots or clips the border.
+CELL_FIT_MIN_LINES = 6        # fewer detected lines than this and the fit isn't trustworthy
+GRID_LINE_PROFILE_THRESHOLD = 0.35  # fraction of the strongest profile peak counted as a line
 # The grid's own ruled lines land inside the cell crops whenever the warp is even slightly off,
 # which makes empty cells look occupied and feeds line fragments to the model. Structures at
 # least this fraction of the grid's width/height are treated as ruling and erased before cells

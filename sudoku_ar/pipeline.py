@@ -152,14 +152,10 @@ class SudokuPipeline:
         warped_binary = detector.preprocess(warped)
         warped_inv = cv2.bitwise_not(warped_binary)
 
-        # the detected quad often overshoots the puzzle; re-crop to the ruling before slicing cells
-        bounds = detector.refine_grid_bounds(warped_inv)
-        if bounds is not None:
-            x0, y0, x1, y1 = bounds
-            warped_inv = cv2.resize(warped_inv[y0:y1, x0:x1], (config.WARP_SIZE, config.WARP_SIZE),
-                                    interpolation=cv2.INTER_AREA)
-
-        digits, confident, min_confidence = self.recognizer.extract_digit(warped_inv)
+        # the detected quad rarely lands exactly on the puzzle's border, so cut cells at the
+        # ruling actually found rather than at nine even slices
+        boundaries = detector.find_cell_boundaries(warped_inv)
+        digits, confident, min_confidence = self.recognizer.extract_digit(warped_inv, boundaries)
         givens = np.count_nonzero(digits)
 
         if self.debug and self.debug_frame_count % DEBUG_DUMP_EVERY == 0:

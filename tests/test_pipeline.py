@@ -23,7 +23,7 @@ class StubRecognizer:
         self.confident = confident
         self.calls = 0
 
-    def extract_digit(self, warped_inv):
+    def extract_digit(self, warped_inv, boundaries=None):
         self.calls += 1
         return self.grid.copy(), self.confident, (1.0 if self.confident else 0.0)
 

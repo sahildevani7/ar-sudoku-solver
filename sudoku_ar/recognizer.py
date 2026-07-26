@@ -42,16 +42,9 @@ def remove_grid_lines(image):
     return cv2.bitwise_not(digits_only)  # back to black ink on white
 
 
-def extract_centered_digit(cell):
+def find_digit_component(cell):
     '''
-        Isolates the digit in a single cell crop (black ink on white) and returns it centred on a
-        DIGIT_SIZE canvas, ready for the model - or None if the cell holds no digit.
-
-        The model was trained on centred digits, so handing it the raw cell crop (with the digit
-        wherever it happened to fall, at whatever scale) costs both accuracy and confidence. On a
-        real capture, centring corrected two of three misread digits and lifted the worst-cell
-        confidence from 0.72 to 0.91. The largest qualifying ink blob is taken as the digit,
-        which also discards speckle and leftover line fragments.
+        Largest ink blob in a cell that could be a digit, as (x, y, w, h, labels, index), or None.
     '''
     ink = (cell < 128).astype(np.uint8)
     height, width = ink.shape[:2]
@@ -70,7 +63,13 @@ def extract_centered_digit(cell):
         return None
 
     x, y, w, h, _ = stats[best]
-    digit = (labels[y:y + h, x:x + w] == best).astype(np.uint8) * 255
+    return x, y, w, h, labels, best
+
+
+def center_component(component, cell_height):
+    '''Crops a digit blob to its bounding box and centres it on a DIGIT_SIZE canvas.'''
+    x, y, w, h, labels, index = component
+    digit = (labels[y:y + h, x:x + w] == index).astype(np.uint8) * 255
 
     scale = config.DIGIT_TARGET_SIZE / max(w, h)
     digit = cv2.resize(digit, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
@@ -82,6 +81,23 @@ def extract_centered_digit(cell):
 
     # canvas is white ink on black; the model expects dark digits on a white field
     return 1.0 - (canvas.astype('float32') / 255.0)
+
+
+def extract_centered_digit(cell):
+    '''
+        Isolates the digit in a single cell crop (black ink on white) and returns it centred on a
+        DIGIT_SIZE canvas, ready for the model - or None if the cell holds no digit.
+
+        The model was trained on centred digits, so handing it the raw cell crop (with the digit
+        wherever it happened to fall, at whatever scale) costs both accuracy and confidence. On a
+        real capture, centring corrected two of three misread digits and lifted the worst-cell
+        confidence from 0.72 to 0.91. The largest qualifying ink blob is taken as the digit,
+        which also discards speckle and leftover line fragments.
+    '''
+    component = find_digit_component(cell)
+    if component is None:
+        return None
+    return center_component(component, cell.shape[0])
 
 
 def empty(image):
@@ -111,7 +127,7 @@ class DigitRecognizer:
         # warm the model once at startup so the first real frame doesn't pay tf.function trace cost
         self.model(np.zeros((1, config.DIGIT_SIZE, config.DIGIT_SIZE, 1), dtype=np.float32), training=False)
 
-    def extract_digit(self, grid):
+    def extract_digit(self, grid, boundaries=None):
         '''
             This function takes the sudoku grid, identifies the digits in the image and returns:
               - a numpy matrix of the predicted sudoku puzzle
@@ -119,27 +135,53 @@ class DigitRecognizer:
                 config.MIN_CONFIDENCE, signalling the whole read should be treated as unreliable
               - the lowest per-cell softmax confidence seen among non-empty cells (1.0 if none),
                 for diagnostics
+
+            `boundaries` is an optional (row_edges, col_edges) pair from
+            detector.find_cell_boundaries. Given it, cells are cut at the puzzle's real ruling
+            rather than nine even slices, which stops a small warp error at the border from
+            accumulating into a whole-row offset further down the grid.
         '''
         grid = remove_grid_lines(grid)
 
-        posx = grid.shape[1] // 9
-        posy = grid.shape[0] // 9
+        height, width = grid.shape[:2]
+        if boundaries is None:
+            rows = np.linspace(0, height, 10)
+            cols = np.linspace(0, width, 10)
+        else:
+            rows, cols = boundaries
         digit_size = config.DIGIT_SIZE
         sudoku = np.zeros((9,9), dtype=np.uint8)
 
-        cell_positions = []
-        cell_batch = []
-
-        #traverse through each part of the 9x9 puzzle and collect the cells that hold a digit
+        # first pass: locate the candidate digit in each cell
+        candidates = []
         for i in range(9):
             for j in range(9):
-                cell = grid[posy*i : posy*(i+1), posx*j : posx*(j+1)]
-                prepared = extract_centered_digit(cell)
-                if prepared is None:
-                    # no qualifying ink in this cell - it's blank
+                y0, y1 = int(round(rows[i])), int(round(rows[i + 1]))
+                x0, x1 = int(round(cols[j])), int(round(cols[j + 1]))
+                # boundaries can sit just outside the image when the warp clipped the border
+                y0, y1 = max(0, y0), min(height, y1)
+                x0, x1 = max(0, x0), min(width, x1)
+                if y1 - y0 < 8 or x1 - x0 < 8:
+                    continue
+
+                cell = grid[y0:y1, x0:x1]
+                component = find_digit_component(cell)
+                if component is None:
+                    continue  # no qualifying ink in this cell - it's blank
+                candidates.append((i, j, component, y1 - y0))
+
+        # Digits within one puzzle are all about the same height, so anything much shorter than
+        # the typical candidate is not a digit (on a screen, usually a streak of glare).
+        cell_positions = []
+        cell_batch = []
+        if candidates:
+            heights = np.array([component[3] / float(cell_h) for _, _, component, cell_h in candidates])
+            floor = config.DIGIT_MIN_RELATIVE_HEIGHT * np.median(heights)
+            for (i, j, component, cell_h), relative_height in zip(candidates, heights):
+                if relative_height < floor:
                     continue
                 cell_positions.append((i, j))
-                cell_batch.append(prepared.reshape(digit_size, digit_size, 1))
+                cell_batch.append(center_component(component, cell_h).reshape(digit_size, digit_size, 1))
 
         confident = True
         min_confidence = 1.0

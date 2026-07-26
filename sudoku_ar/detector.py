@@ -203,18 +203,13 @@ def find_grid(frame):
     return quad, coords, is_grid
 
 
-def _line_extent(line_mask, axis):
-    '''
-        Positions of the first and last strong ruled line along one axis, or None if too few
-        lines are visible to trust the result.
-    '''
+def _line_positions(line_mask, axis):
+    '''Centre of each run of strong response in a projection profile - one per ruled line.'''
     profile = line_mask.sum(axis=axis).astype(np.float32)
     peak = profile.max()
     if peak <= 0:
-        return None
-    strong = np.where(profile > 0.35 * peak)[0]
-    if len(strong) == 0:
-        return None
+        return []
+    strong = np.where(profile > config.GRID_LINE_PROFILE_THRESHOLD * peak)[0]
 
     groups = []
     for index in strong:
@@ -222,20 +217,52 @@ def _line_extent(line_mask, axis):
             groups[-1].append(index)
         else:
             groups.append([index])
-    if len(groups) < 4:  # need several ruled lines before trusting the extent
-        return None
-    return int(np.mean(groups[0])), int(np.mean(groups[-1]))
+    return [float(np.mean(group)) for group in groups]
 
 
-def refine_grid_bounds(warped_inv):
+def _fit_ten_boundaries(positions, size):
     '''
-        Corrects a warp whose quad overshot the puzzle.
+        Fits the 10 evenly spaced boundaries of a 9-cell axis to the ruled lines actually found.
 
-        The outer contour often merges the grid with whatever sits beside it on the page or
-        screen, so the warped square can include a margin of unrelated content - which shifts
-        every cell boundary and makes the fixed 1/9 slicing sample across cell edges. The
-        puzzle's own ruling is the reliable landmark: this finds the outermost ruled lines and
-        returns the crop bounding them, or None when too few lines are visible to be sure.
+        Lines are regularly spaced, so their spacing and offset can be recovered by least
+        squares even when some are missing - including the outer border, which is often the one
+        that gets clipped or washed out. Boundaries may legitimately fall slightly outside the
+        image when the warp clipped the puzzle's edge.
+    '''
+    if len(positions) < config.CELL_FIT_MIN_LINES:
+        return None
+
+    positions = np.asarray(positions, dtype=np.float64)
+    spacing = np.median(np.diff(positions))
+    if spacing <= 0:
+        return None
+
+    # index each detected line relative to the first, then fit position = offset + spacing*index
+    indices = np.round((positions - positions[0]) / spacing).astype(int)
+    design = np.vstack([np.ones(len(indices)), indices]).T
+    offset, step = np.linalg.lstsq(design, positions, rcond=None)[0]
+    if step <= 0:
+        return None
+
+    # the first line found isn't necessarily the grid's edge; pick the alignment whose 10
+    # boundaries best span the image
+    best = None
+    for first_index in range(10):
+        candidate = offset + step * (np.arange(10) - first_index)
+        error = abs(candidate[0]) + abs(candidate[-1] - size)
+        if best is None or error < best[0]:
+            best = (error, candidate)
+    return best[1]
+
+
+def find_cell_boundaries(warped_inv):
+    '''
+        Returns (row_boundaries, col_boundaries), 10 each, marking the true cell edges of the
+        warped puzzle - or None if the ruling is too faint to fit.
+
+        Slicing the warp into nine even strips assumes the detected quad landed exactly on the
+        puzzle's border. It usually doesn't, and a small error at the edge accumulates into a
+        whole-row offset by the bottom of the grid, so cells sample across their neighbours.
     '''
     ink = (warped_inv < 128).astype(np.uint8) * 255
     height, width = ink.shape[:2]
@@ -245,19 +272,11 @@ def refine_grid_bounds(warped_inv):
     horizontal = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 1)))
     vertical = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_len)))
 
-    rows = _line_extent(horizontal, 1)
-    cols = _line_extent(vertical, 0)
+    rows = _fit_ten_boundaries(_line_positions(horizontal, 1), height)
+    cols = _fit_ten_boundaries(_line_positions(vertical, 0), width)
     if rows is None or cols is None:
         return None
-
-    y0, y1 = rows
-    x0, x1 = cols
-    # a refinement that keeps almost nothing, or changes almost nothing, isn't worth applying
-    if (y1 - y0) < 0.5 * height or (x1 - x0) < 0.5 * width:
-        return None
-    if (y1 - y0) > 0.98 * height and (x1 - x0) > 0.98 * width:
-        return None
-    return x0, y0, x1, y1
+    return rows, cols
 
 
 def perspective_transform(coords, image):

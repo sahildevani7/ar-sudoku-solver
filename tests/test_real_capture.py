@@ -3,9 +3,10 @@ End-to-end recognition check against a real camera capture (a puzzle displayed o
 screen, photographed by the webcam) rather than a synthetic drawing.
 
 The synthetic fixtures elsewhere in this suite passed happily while the app failed on real
-input, so this pins the behaviour that actually mattered: on this frame the reader originally
-found 73 of 81 cells "occupied" with a worst-cell confidence of 0.21 and produced an invalid
-grid. Grid-line removal plus centring each digit brings that to 26 givens at 0.91.
+input, so this pins the behaviour that actually mattered. On this frame the reader has at
+various points found 73 of 81 cells "occupied" (ruled lines counted as ink), read every row
+shifted up by one (cells cut at even ninths instead of at the real ruling), and invented digits
+out of screen glare. It should now read the puzzle exactly.
 '''
 import os
 
@@ -13,14 +14,14 @@ import cv2
 import numpy as np
 import pytest
 
-from sudoku_ar import config
+from sudoku_ar import config, detector
 from sudoku_ar.recognizer import DigitRecognizer
+from sudoku_ar.solver import solve_wrapper
 from sudoku_ar.validator import isValidConfig
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "real_capture_warped_inv.png")
 
-# What a human reads off the captured frame. Cell [2][0] is blank in the real puzzle - a streak
-# of screen glare sits there, which the reader still calls a "1"; see the xfail below.
+# What a human reads off the captured frame.
 EXPECTED = np.array([
     [0, 3, 0, 0, 0, 0, 0, 4, 0],
     [5, 4, 0, 0, 7, 1, 0, 2, 0],
@@ -39,13 +40,15 @@ def read():
     recognizer = DigitRecognizer()
     warped_inv = cv2.imread(FIXTURE, cv2.IMREAD_GRAYSCALE)
     assert warped_inv is not None, "fixture image missing"
-    return recognizer.extract_digit(warped_inv)
+    boundaries = detector.find_cell_boundaries(warped_inv)
+    assert boundaries is not None, "ruling should be detectable on this capture"
+    return recognizer.extract_digit(warped_inv, boundaries)
 
 
-def test_finds_a_plausible_number_of_givens(read):
+def test_finds_the_right_number_of_givens(read):
     digits, _, _ = read
-    # the old reader saw 73 here, because ruled lines counted as ink
-    assert 20 <= np.count_nonzero(digits) <= 30
+    # the reader once saw 73 here, because ruled lines counted as ink
+    assert np.count_nonzero(digits) == np.count_nonzero(EXPECTED)
 
 
 def test_read_is_confident_enough_to_accept(read):
@@ -59,20 +62,35 @@ def test_read_obeys_sudoku_rules(read):
     assert isValidConfig(digits)
 
 
-def test_almost_every_cell_matches_the_human_reading(read):
+def test_every_cell_matches_the_human_reading(read):
     digits, _, _ = read
-    wrong = np.count_nonzero(digits != EXPECTED)
-    assert wrong <= 1, "regressed to %d wrong cells:\n%s" % (wrong, digits)
+    assert np.array_equal(digits, EXPECTED), "read back:\n%s" % digits
 
 
-def test_blank_cells_are_not_invented(read):
+def test_glare_streaks_are_not_read_as_digits(read):
+    '''Column 0 carries two streaks of screen glare; neither is a digit.'''
     digits, _, _ = read
-    # every cell the reader calls blank really is blank, and vice versa apart from the glare cell
-    disagreements = list(zip(*np.where((digits == 0) != (EXPECTED == 0))))
-    assert disagreements in ([], [(2, 0)]), disagreements
-
-
-@pytest.mark.xfail(strict=True, reason="glare streak on the phone screen at [2][0] still reads as a 1")
-def test_glare_streak_is_not_read_as_a_digit(read):
-    digits, _, _ = read
+    assert digits[0][0] == 0
     assert digits[2][0] == 0
+
+
+def test_the_read_puzzle_actually_solves(read):
+    digits, _, _ = read
+    solution, _ = solve_wrapper(digits.copy())
+    assert solution is not None
+
+
+def test_cell_boundaries_are_fitted_not_evenly_spaced():
+    '''
+    The warp clipped this puzzle's top border and left dead space below it, so the true cell
+    edges are not at even ninths - assuming they were shifted every row up by one.
+    '''
+    warped_inv = cv2.imread(FIXTURE, cv2.IMREAD_GRAYSCALE)
+    rows, cols = detector.find_cell_boundaries(warped_inv)
+    height = warped_inv.shape[0]
+
+    assert len(rows) == 10 and len(cols) == 10
+    assert rows[0] < 0          # the puzzle's top edge fell outside the warp
+    assert rows[-1] < height    # ...and its bottom edge inside it
+    spacings = np.diff(rows)
+    assert spacings.std() < 1.0  # evenly spaced among themselves, just offset
