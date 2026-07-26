@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from exact_cover_solver import solve_wrapper
+from sudoku_ar.solver import solve_wrapper
 
 # A well-known puzzle/solution pair (from Project Euler #96, puzzle 1).
 PUZZLE = np.array([

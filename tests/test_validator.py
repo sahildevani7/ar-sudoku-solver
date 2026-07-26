@@ -1,6 +1,6 @@
 import numpy as np
 
-from grid_validator import isValidConfig
+from sudoku_ar.validator import isValidConfig
 
 from tests.test_solver import PUZZLE, SOLUTION
 
