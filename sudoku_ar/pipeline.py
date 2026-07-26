@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 
 from . import config, detector, hud, overlay
+from .capture import Camera
 from .recognizer import DigitRecognizer
 from .solver import solve_wrapper
 from .validator import isValidConfig
@@ -45,20 +46,21 @@ class SudokuPipeline:
         self.rejected_cooldown = 0
         self.solved_grid = None
         self.unsolved_grid = None
+        self.canvas = None
+        self.mask = None
+        self.smoothed_coords = None
 
     def process(self, frame):
         if self.rejected_cooldown > 0:
             self.rejected_cooldown -= 1
 
-        processed = detector.preprocess(frame)
-        biggest = detector.find_largest_contour(processed)
+        biggest, coords = detector.find_grid(frame)
 
         if biggest is None:
             self._on_grid_absent()
             hud.draw_status(frame, "No grid detected", RED)
             return frame
 
-        coords = detector.get_corners(biggest)
         if not detector.validate_rect(coords):
             self._on_grid_absent()
             hud.draw_status(frame, "Adjust grid position for better visibility", RED)
@@ -66,16 +68,24 @@ class SudokuPipeline:
 
         # a valid quad is in view this frame
         self.lost_count = 0
+        coords = self._smooth(coords)
         cv2.drawContours(frame, [biggest], 0, GREEN, 2)
-        warped = detector.perspective_transform(coords, frame)
 
         if self.state == State.SOLVED:
-            solved_image = overlay.fill_sudoku(self.solved_grid, self.unsolved_grid, warped)
-            frame = overlay.unwarp_image(solved_image, frame, coords)
+            frame = overlay.composite(frame, self.canvas, self.mask, coords, config.WARP_SIZE)
             hud.draw_status(frame, "Solved! Press 'r' to reset", GREEN)
             return frame
 
+        warped = detector.perspective_transform(coords, frame)
         return self._acquire(frame, warped)
+
+    def _smooth(self, coords):
+        if self.smoothed_coords is None:
+            self.smoothed_coords = coords
+        else:
+            alpha = config.CORNER_SMOOTHING
+            self.smoothed_coords = alpha * coords + (1 - alpha) * self.smoothed_coords
+        return self.smoothed_coords
 
     def _acquire(self, frame, warped):
         warped_binary = detector.preprocess(warped)
@@ -117,6 +127,7 @@ class SudokuPipeline:
         if solved is not None:
             self.solved_grid = solved
             self.unsolved_grid = self.candidate.copy()
+            self.canvas, self.mask = overlay.render_solution_canvas(solved, self.unsolved_grid, config.WARP_SIZE)
             self.state = State.SOLVED
             self.candidate = None
             self.confirm_count = 0
@@ -144,7 +155,7 @@ def run():
     recognizer = DigitRecognizer()
     pipeline = SudokuPipeline(recognizer)
 
-    cap = cv2.VideoCapture(config.CAMERA_INDEX)
+    cap = Camera(config.CAMERA_INDEX).start()
 
     while cap.isOpened():
         start_time = time.time()

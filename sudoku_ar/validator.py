@@ -1,44 +1,20 @@
-def notInRow(arr, row):  
-  
-    st = set()  
-    for i in range(0, 9):  
-        if arr[row][i] in st:  
-            return False
-        if arr[row][i] != 0:  
-            st.add(arr[row][i])       
-    return True
-  
-def notInCol(arr, col):  
-  
-    st = set()  
-    for i in range(0, 9):  
-        if arr[i][col] in st: 
-            return False
-        if arr[i][col] != 0:  
-            st.add(arr[i][col])       
-    return True
-  
-def notInBox(arr, startRow, startCol):  
-  
-    st = set()  
-    for row in range(0, 3):  
-        for col in range(0, 3):  
-            curr = arr[row + startRow][col + startCol]  
-            if curr in st:  
-                return False
-            if curr != 0:  
-                st.add(curr)         
-    return True
+import numpy as np
 
-def isValid(arr, row, col):  
-  
-    return (notInRow(arr, row) and notInCol(arr, col) and
-            notInBox(arr, row - row % 3, col - col % 3))  
-  
-def isValidConfig(arr):  
-  
-    for i in range(0, 9):  
-        for j in range(0, 9):  
-            if not isValid(arr, i, j):  
-                return False   
-    return True
+
+def _no_duplicates(groups):
+    '''
+        groups: (9, 9) array where each row holds one line of cells to check (a sudoku row,
+        column, or 3x3 box). Returns False if any nonzero value repeats within a single group.
+    '''
+    sorted_groups = np.sort(groups, axis=1)
+    adjacent_equal = (sorted_groups[:, 1:] == sorted_groups[:, :-1]) & (sorted_groups[:, 1:] != 0)
+    return not adjacent_equal.any()
+
+
+def isValidConfig(arr):
+    '''
+        Checks every row, column, and 3x3 box for duplicate (nonzero) digits.
+    '''
+    arr = np.asarray(arr)
+    boxes = arr.reshape(3, 3, 3, 3).transpose(0, 2, 1, 3).reshape(9, 9)
+    return bool(_no_duplicates(arr) and _no_duplicates(arr.T) and _no_duplicates(boxes))

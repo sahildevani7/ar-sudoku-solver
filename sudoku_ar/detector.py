@@ -89,6 +89,40 @@ def validate_rect(coords):
     return False
 
 
+def _downscale(frame, max_dim):
+    h, w = frame.shape[:2]
+    scale = min(1.0, max_dim / max(h, w))
+    if scale < 1.0:
+        small = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    else:
+        small = frame
+        scale = 1.0
+    return small, scale
+
+
+def find_grid(frame):
+    '''
+        Detects the sudoku grid quad in `frame`. Contour search runs on a copy downscaled to
+        config.DETECTION_MAX_DIM (a 1080p frame otherwise costs ~7x a 640px-wide one for the
+        same search). Returns (biggest_contour, coords), both scaled back to frame's original
+        resolution, or (None, None) if no contour was found.
+
+        Callers should still run validate_rect(coords) themselves - that's a separate check
+        for whether the found contour is actually a well-formed quad.
+    '''
+    small, scale = _downscale(frame, config.DETECTION_MAX_DIM)
+    processed = preprocess(small)
+    biggest = find_largest_contour(processed)
+    if biggest is None:
+        return None, None
+
+    if scale != 1.0:
+        biggest = np.round(biggest.astype(np.float32) / scale).astype(np.int32)
+
+    coords = get_corners(biggest)
+    return biggest, coords
+
+
 def perspective_transform(coords, image):
     '''
         This funtion returns a birds eye view of the extracted sudoku grid from the frame,

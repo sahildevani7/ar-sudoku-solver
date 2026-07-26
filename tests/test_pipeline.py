@@ -32,8 +32,7 @@ def grid_present(monkeypatch):
     '''Patches the detector boundary so pipeline.process() believes a valid grid quad is in view.'''
     monkeypatch.setattr("sudoku_ar.pipeline.detector.preprocess",
                         lambda img: np.zeros((config.WARP_SIZE, config.WARP_SIZE), dtype=np.uint8))
-    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_largest_contour", lambda img: DUMMY_CONTOUR)
-    monkeypatch.setattr("sudoku_ar.pipeline.detector.get_corners", lambda c: DUMMY_COORDS)
+    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_grid", lambda frame: (DUMMY_CONTOUR, DUMMY_COORDS))
     monkeypatch.setattr("sudoku_ar.pipeline.detector.validate_rect", lambda coords: True)
     monkeypatch.setattr("sudoku_ar.pipeline.detector.perspective_transform",
                          lambda coords, img: np.zeros((config.WARP_SIZE, config.WARP_SIZE, 3), dtype=np.uint8))
@@ -42,7 +41,7 @@ def grid_present(monkeypatch):
 def grid_absent(monkeypatch):
     monkeypatch.setattr("sudoku_ar.pipeline.detector.preprocess",
                         lambda img: np.zeros((config.WARP_SIZE, config.WARP_SIZE), dtype=np.uint8))
-    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_largest_contour", lambda img: None)
+    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_grid", lambda frame: (None, None))
 
 
 def test_confirm_then_lock_solves_after_matching_frames(monkeypatch):

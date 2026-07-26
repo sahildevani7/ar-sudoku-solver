@@ -4,6 +4,8 @@ CAMERA_INDEX = 0
 # Grid detection
 CONTOUR_MIN_AREA = 1000
 RECT_SIDE_TOLERANCE = 0.2  # opposite sides of the detected quad may differ by up to this fraction
+DETECTION_MAX_DIM = 640    # contour search runs on a copy downscaled to this long side, then scales back
+CORNER_SMOOTHING = 0.4     # EMA weight given to each new corner reading (lower = smoother, more lag)
 
 # Perspective warp - fixed square so cell slicing and model input sizing stay
 # constant frame-to-frame regardless of how the grid is framed by the camera.
