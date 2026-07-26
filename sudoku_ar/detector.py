@@ -17,26 +17,101 @@ def preprocess(img):
     return opening
 
 
+QUAD_EPSILON_FACTORS = (0.02, 0.03, 0.04, 0.05)
+MAX_CONTOUR_CANDIDATES = 8
+
+
+def _simplify_to_quad(contour):
+    '''
+        Simplifies a contour to a clean 4-point polygon via approxPolyDP, tried at a few
+        increasing epsilons (real camera contours - lighting, blur, compression noise - often
+        don't converge to exactly 4 points at a single fixed epsilon the way a clean synthetic
+        shape does).
+
+        Returns None if none of them converge to 4 points. It deliberately does NOT fall back to
+        the raw contour: get_corners would then force any blob into a "quad" via its extremal
+        points, which is exactly how a face silhouette used to get accepted as a grid.
+    '''
+    perimeter = cv2.arcLength(contour, True)
+    for eps_factor in QUAD_EPSILON_FACTORS:
+        approx = cv2.approxPolyDP(contour, eps_factor * perimeter, True)
+        if len(approx) == 4:
+            return approx
+    return None
+
+
+def quad_solidity(contour, coords):
+    '''
+        Ratio of the contour's own area to the area of the 4-corner quad through it. A real
+        rectangular outline traces its own quad (~1.0); a rounded or irregular silhouette
+        disagrees with its extremal-point quad substantially in either direction.
+    '''
+    quad_area = cv2.contourArea(coords.astype(np.float32).reshape(-1, 1, 2))
+    if quad_area <= 0:
+        return 0.0
+    return cv2.contourArea(contour) / quad_area
+
+
+def quad_aspect(coords):
+    '''Width/height ratio of the quad, averaging each pair of opposite sides.'''
+    tleft, tright, bright, bleft = coords
+    width = (np.linalg.norm(tright - tleft) + np.linalg.norm(bright - bleft)) / 2
+    height = (np.linalg.norm(bleft - tleft) + np.linalg.norm(bright - tright)) / 2
+    if height <= 0:
+        return 0.0
+    return width / height
+
+
+def is_grid_quad(contour, coords):
+    '''
+        Full shape test for "is this contour plausibly a sudoku grid outline". validate_rect
+        alone is too weak - it only compares opposite side lengths, which an irregular blob's
+        extremal points pass easily - so this also requires the contour to actually fill its
+        quad (solidity) and to be roughly square (aspect).
+    '''
+    if not validate_rect(coords):
+        return False
+    solidity = quad_solidity(contour, coords)
+    if not (config.QUAD_SOLIDITY_MIN <= solidity <= config.QUAD_SOLIDITY_MAX):
+        return False
+    aspect = quad_aspect(coords)
+    return config.QUAD_ASPECT_MIN <= aspect <= config.QUAD_ASPECT_MAX
+
+
 def find_largest_contour(image):
     '''
-        The sudoku box will have the largest contour area. This function checks for the
-        largest contour that approximates to a quadrilateral (4 vertices after approxPolyDP)
-        and returns that simplified 4-point polygon - any other shape (a hand, a stray dark
-        region, text on a page) is skipped even if its area is bigger.
+        Picks the sudoku grid contour out of `image`. A bigger object sharing the frame (a
+        face, a hand) can easily have a larger contour area than the puzzle itself, so this
+        doesn't just take the single largest-area contour - it checks candidates in descending
+        area order and returns the first one that actually validates as a well-formed quad,
+        letting a smaller-but-rectangular puzzle win over a bigger but irregular shape.
+
+        Returns (quad, coords, is_valid_rect):
+          - quad/coords are None if no contour cleared config.CONTOUR_MIN_AREA at all
+          - otherwise they're the first candidate (checked largest-area-first) that passed
+            validate_rect, or, if none did, the single largest candidate anyway - so callers
+            can distinguish "found something, just not rectangular" from "found nothing"
+          - is_valid_rect is False whenever no candidate validated
     '''
     contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    max_area = 0
-    biggest = None
+    candidates = [c for c in contours if cv2.contourArea(c) > config.CONTOUR_MIN_AREA]
+    if not candidates:
+        return None, None, False
 
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area > config.CONTOUR_MIN_AREA and area > max_area:
-            perimeter = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
-            if len(approx) == 4:
-                max_area = area
-                biggest = approx
-    return biggest
+    candidates.sort(key=cv2.contourArea, reverse=True)
+
+    fallback_quad, fallback_coords = None, None
+    for contour in candidates[:MAX_CONTOUR_CANDIDATES]:
+        quad = _simplify_to_quad(contour)
+        if quad is None:
+            continue
+        coords = get_corners(quad)
+        if fallback_quad is None:
+            fallback_quad, fallback_coords = quad, coords
+        if is_grid_quad(contour, coords):
+            return quad, coords, True
+
+    return fallback_quad, fallback_coords, False
 
 
 def get_corners(biggest_contour):
@@ -108,23 +183,81 @@ def find_grid(frame):
     '''
         Detects the sudoku grid quad in `frame`. Contour search runs on a copy downscaled to
         config.DETECTION_MAX_DIM (a 1080p frame otherwise costs ~7x a 640px-wide one for the
-        same search). Returns (biggest_contour, coords), both scaled back to frame's original
-        resolution, or (None, None) if no contour was found.
+        same search).
 
-        Callers should still run validate_rect(coords) themselves - that's a separate check
-        for whether the found contour is actually a well-formed quad.
+        Returns (quad, coords, is_grid) scaled back to frame's original resolution, where
+        is_grid is the verdict of the full shape test (see is_grid_quad). Callers should trust
+        that flag rather than re-running validate_rect, which on its own is too weak to reject
+        an irregular blob. (None, None, False) means nothing cleared the area threshold.
     '''
     small, scale = _downscale(frame, config.DETECTION_MAX_DIM)
     processed = preprocess(small)
-    biggest = find_largest_contour(processed)
-    if biggest is None:
-        return None, None
+    quad, coords, is_grid = find_largest_contour(processed)
+    if quad is None:
+        return None, None, False
 
     if scale != 1.0:
-        biggest = np.round(biggest.astype(np.float32) / scale).astype(np.int32)
+        quad = np.round(quad.astype(np.float32) / scale).astype(np.int32)
+        coords = coords / scale
 
-    coords = get_corners(biggest)
-    return biggest, coords
+    return quad, coords, is_grid
+
+
+def _line_extent(line_mask, axis):
+    '''
+        Positions of the first and last strong ruled line along one axis, or None if too few
+        lines are visible to trust the result.
+    '''
+    profile = line_mask.sum(axis=axis).astype(np.float32)
+    peak = profile.max()
+    if peak <= 0:
+        return None
+    strong = np.where(profile > 0.35 * peak)[0]
+    if len(strong) == 0:
+        return None
+
+    groups = []
+    for index in strong:
+        if groups and index - groups[-1][-1] <= 6:
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+    if len(groups) < 4:  # need several ruled lines before trusting the extent
+        return None
+    return int(np.mean(groups[0])), int(np.mean(groups[-1]))
+
+
+def refine_grid_bounds(warped_inv):
+    '''
+        Corrects a warp whose quad overshot the puzzle.
+
+        The outer contour often merges the grid with whatever sits beside it on the page or
+        screen, so the warped square can include a margin of unrelated content - which shifts
+        every cell boundary and makes the fixed 1/9 slicing sample across cell edges. The
+        puzzle's own ruling is the reliable landmark: this finds the outermost ruled lines and
+        returns the crop bounding them, or None when too few lines are visible to be sure.
+    '''
+    ink = (warped_inv < 128).astype(np.uint8) * 255
+    height, width = ink.shape[:2]
+
+    h_len = max(3, int(width * config.GRID_LINE_LENGTH_RATIO))
+    v_len = max(3, int(height * config.GRID_LINE_LENGTH_RATIO))
+    horizontal = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 1)))
+    vertical = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_len)))
+
+    rows = _line_extent(horizontal, 1)
+    cols = _line_extent(vertical, 0)
+    if rows is None or cols is None:
+        return None
+
+    y0, y1 = rows
+    x0, x1 = cols
+    # a refinement that keeps almost nothing, or changes almost nothing, isn't worth applying
+    if (y1 - y0) < 0.5 * height or (x1 - x0) < 0.5 * width:
+        return None
+    if (y1 - y0) > 0.98 * height and (x1 - x0) > 0.98 * width:
+        return None
+    return x0, y0, x1, y1
 
 
 def perspective_transform(coords, image):

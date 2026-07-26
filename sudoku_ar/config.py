@@ -7,6 +7,17 @@ RECT_SIDE_TOLERANCE = 0.2  # opposite sides of the detected quad may differ by u
 DETECTION_MAX_DIM = 640    # contour search runs on a copy downscaled to this long side, then scales back
 CORNER_SMOOTHING = 0.4     # EMA weight given to each new corner reading (lower = smoother, more lag)
 
+# Shape gates separating a real grid outline from any other large dark region (a face, a hand,
+# a shadow). validate_rect alone only compares opposite side lengths, which an irregular blob's
+# extremal points pass easily - these are what actually reject it.
+#   solidity = contour area / area of the 4-corner quad. A true rectangle traces its own quad
+#   (~1.0); a rounded/irregular blob's contour and extremal-point quad disagree sharply.
+QUAD_SOLIDITY_MIN = 0.80
+QUAD_SOLIDITY_MAX = 1.25
+#   a sudoku grid is square; allow generous perspective skew but not a tall/wide silhouette
+QUAD_ASPECT_MIN = 0.55
+QUAD_ASPECT_MAX = 1.80
+
 # Perspective warp - fixed square so cell slicing and model input sizing stay
 # constant frame-to-frame regardless of how the grid is framed by the camera.
 WARP_SIZE = 450  # divisible by 9 -> exact 50px cells
@@ -16,7 +27,22 @@ DIGIT_SIZE = 32
 DIGIT_CROP_BORDER = 3
 GRID_BORDER_CROP_RATIO = 0.12
 EMPTY_CELL_WHITE_RATIO = 0.97
-MIN_CONFIDENCE = 0.85  # reject a whole read if any predicted cell falls below this softmax confidence
+MIN_CONFIDENCE = 0.75  # reject a whole read if any predicted cell falls below this softmax confidence
+# Measured on real camera captures: a well-centred read scores ~0.91 at worst, while frames of
+# noise/glare score 0.2-0.5, so this sits between. (An earlier 0.85 was guesswork and rejected
+# perfectly good reads.)
+
+# Each cell's digit is isolated, cropped to its own bounding box and re-centred before going to
+# the model, which was trained on centred digits. Feeding it whatever happened to land in the
+# cell crop instead cost both accuracy and confidence.
+DIGIT_TARGET_SIZE = 20        # longest side of the digit, within the DIGIT_SIZE canvas
+DIGIT_MIN_AREA_RATIO = 0.008  # ink blobs smaller than this fraction of a cell are speckle
+DIGIT_MIN_HEIGHT_RATIO = 0.25 # ...and a real digit is at least this tall relative to the cell
+# The grid's own ruled lines land inside the cell crops whenever the warp is even slightly off,
+# which makes empty cells look occupied and feeds line fragments to the model. Structures at
+# least this fraction of the grid's width/height are treated as ruling and erased before cells
+# are cut - a digit is never that long in one direction.
+GRID_LINE_LENGTH_RATIO = 1 / 15
 
 # Acquisition state machine
 CONFIRM_FRAMES = 3       # consecutive identical reads required before locking onto a puzzle

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from sudoku_ar import config
-from sudoku_ar.recognizer import DigitRecognizer, remove_border, empty
+from sudoku_ar.recognizer import DigitRecognizer, remove_border, remove_grid_lines, extract_centered_digit, empty
 
 
 @pytest.fixture(scope="module")
@@ -16,11 +16,12 @@ def blank_grid():
 
 
 def test_blank_grid_returns_all_zero_and_confident(recognizer):
-    result, confident = recognizer.extract_digit(blank_grid())
+    result, confident, min_confidence = recognizer.extract_digit(blank_grid())
     assert result.shape == (9, 9)
     assert result.dtype == np.uint8
     assert np.all(result == 0)
     assert confident is True
+    assert min_confidence == 1.0
 
 
 def test_non_empty_cells_produce_in_range_digits(recognizer):
@@ -31,9 +32,10 @@ def test_non_empty_cells_produce_in_range_digits(recognizer):
         cx, cy = j * posx + posx // 2, i * posy + posy // 2
         cv2.circle(grid, (cx, cy), posx // 4, 0, -1)
 
-    result, confident = recognizer.extract_digit(grid)
+    result, confident, min_confidence = recognizer.extract_digit(grid)
     assert result.shape == (9, 9)
     assert isinstance(confident, bool)
+    assert 0.0 <= min_confidence <= 1.0
     for (i, j) in [(2, 3), (5, 7), (0, 0)]:
         assert 1 <= result[i, j] <= 9
     # cells that were never touched must stay empty
@@ -52,18 +54,59 @@ def test_batching_matches_a_direct_single_cell_prediction(recognizer):
     cx, cy = target_j * posx + posx // 2, target_i * posy + posy // 2
     cv2.circle(grid, (cx, cy), posx // 4, 0, -1)
 
-    result, _ = recognizer.extract_digit(grid)
+    result, _, _ = recognizer.extract_digit(grid)
 
-    border = config.DIGIT_CROP_BORDER
     digit_size = config.DIGIT_SIZE
-    cell = grid[posy * target_i: posy * (target_i + 1), posx * target_j: posx * (target_j + 1)]
-    cropped = remove_border(cell)
-    resized = cv2.resize(cropped, (digit_size - 2 * border, digit_size - 2 * border), interpolation=cv2.INTER_AREA)
-    padded = cv2.copyMakeBorder(resized, border, border, border, border, cv2.BORDER_CONSTANT, value=(255, 255, 255))
-    padded = padded.astype('float32') / 255.0
+    cleaned = remove_grid_lines(grid)
+    cell = cleaned[posy * target_i: posy * (target_i + 1), posx * target_j: posx * (target_j + 1)]
+    prepared = extract_centered_digit(cell)
+    assert prepared is not None
 
-    direct_pred = recognizer.model(padded.reshape(1, digit_size, digit_size, 1), training=False).numpy().argmax(axis=1)[0] + 1
+    direct_pred = recognizer.model(prepared.reshape(1, digit_size, digit_size, 1), training=False).numpy().argmax(axis=1)[0] + 1
     assert result[target_i, target_j] == direct_pred
+
+
+def test_remove_grid_lines_erases_ruling_but_keeps_digits():
+    '''
+    The ruled lines land inside cell crops whenever the warp is slightly off, which made empty()
+    report nearly every cell as occupied (73 of 81 on a real capture) and fed line fragments to
+    the model. Ruling must go; digit strokes must survive.
+    '''
+    size = config.WARP_SIZE
+    grid = np.full((size, size), 255, dtype=np.uint8)
+    for i in range(10):  # full-length ruling
+        offset = min(i * (size // 9), size - 1)
+        cv2.line(grid, (0, offset), (size - 1, offset), 0, 3)
+        cv2.line(grid, (offset, 0), (offset, size - 1), 0, 3)
+
+    cell = size // 9
+    digit_pos = (3 * cell + cell // 3, 2 * cell + 2 * cell // 3)
+    cv2.putText(grid, "5", digit_pos, cv2.FONT_HERSHEY_SIMPLEX, cell / 45, 0, 3)
+
+    ink_before = np.count_nonzero(grid < 128)
+    cleaned = remove_grid_lines(grid)
+    ink_after = np.count_nonzero(cleaned < 128)
+
+    assert ink_after < ink_before * 0.5  # the ruling (most of the ink) is gone
+    assert ink_after > 0                 # but the digit survived
+
+    # and the surviving ink sits in the cell the digit was drawn in
+    ys, xs = np.where(cleaned < 128)
+    assert 2 <= int(np.median(ys)) // cell <= 3
+    assert 3 <= int(np.median(xs)) // cell <= 4
+
+
+def test_line_removal_stops_empty_cells_reading_as_occupied(recognizer):
+    '''An empty grid that is nothing but ruling must yield no digits at all.'''
+    size = config.WARP_SIZE
+    grid = np.full((size, size), 255, dtype=np.uint8)
+    for i in range(10):
+        offset = min(i * (size // 9), size - 1)
+        cv2.line(grid, (0, offset), (size - 1, offset), 0, 3)
+        cv2.line(grid, (offset, 0), (offset, size - 1), 0, 3)
+
+    result, _, _ = recognizer.extract_digit(grid)
+    assert np.count_nonzero(result) == 0
 
 
 def test_empty_helper_on_mostly_white_and_mostly_black():

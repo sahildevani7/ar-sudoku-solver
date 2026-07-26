@@ -16,7 +16,7 @@ def make_frame():
 
 
 class StubRecognizer:
-    '''Returns a fixed (grid, confident) pair on every call, ignoring the input image.'''
+    '''Returns a fixed (grid, confident, min_confidence) triple on every call, ignoring the input image.'''
 
     def __init__(self, grid, confident=True):
         self.grid = grid
@@ -25,14 +25,14 @@ class StubRecognizer:
 
     def extract_digit(self, warped_inv):
         self.calls += 1
-        return self.grid.copy(), self.confident
+        return self.grid.copy(), self.confident, (1.0 if self.confident else 0.0)
 
 
 def grid_present(monkeypatch):
     '''Patches the detector boundary so pipeline.process() believes a valid grid quad is in view.'''
     monkeypatch.setattr("sudoku_ar.pipeline.detector.preprocess",
                         lambda img: np.zeros((config.WARP_SIZE, config.WARP_SIZE), dtype=np.uint8))
-    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_grid", lambda frame: (DUMMY_CONTOUR, DUMMY_COORDS))
+    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_grid", lambda frame: (DUMMY_CONTOUR, DUMMY_COORDS, True))
     monkeypatch.setattr("sudoku_ar.pipeline.detector.validate_rect", lambda coords: True)
     monkeypatch.setattr("sudoku_ar.pipeline.detector.perspective_transform",
                          lambda coords, img: np.zeros((config.WARP_SIZE, config.WARP_SIZE, 3), dtype=np.uint8))
@@ -41,7 +41,7 @@ def grid_present(monkeypatch):
 def grid_absent(monkeypatch):
     monkeypatch.setattr("sudoku_ar.pipeline.detector.preprocess",
                         lambda img: np.zeros((config.WARP_SIZE, config.WARP_SIZE), dtype=np.uint8))
-    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_grid", lambda frame: (None, None))
+    monkeypatch.setattr("sudoku_ar.pipeline.detector.find_grid", lambda frame: (None, None, False))
 
 
 def test_confirm_then_lock_solves_after_matching_frames(monkeypatch):
