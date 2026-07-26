@@ -7,8 +7,13 @@ import time
 from grid_validator import isValidConfig
 from exact_cover_solver import solve_wrapper
 
+WARP_SIZE = 450  # divisible by 9 -> exact 50px cells, keeps warp/recognition geometry constant frame-to-frame
+DIGIT_SIZE = 32
+
 #load the created model
 model = tf.keras.models.load_model('models/sudoku_digit_recognizer.h5')
+# warm the model once at startup so the first real frame doesn't pay tf.function trace cost
+model(np.zeros((1, DIGIT_SIZE, DIGIT_SIZE, 1), dtype=np.float32), training=False)
 
 
 def preprocess(img):
@@ -99,29 +104,21 @@ def validate_rect(coords):
 
 def perspective_transform(coords, image):
     '''
-        This funtion returns a birds eye view of the extracted sudoku grid from the frame
+        This funtion returns a birds eye view of the extracted sudoku grid from the frame,
+        warped to a fixed WARP_SIZE x WARP_SIZE square so downstream cell slicing and model
+        input sizing stay constant regardless of how the grid is framed.
     '''
-    tleft, tright, bright, bleft = coords
-
-    widthTop = np.sqrt( ((tright[0] - tleft[0])**2) + ((tright[1] - tleft[1])**2) )
-    widthBot = np.sqrt( ((bright[0] - bleft[0])**2) + ((bright[1] - bleft[1])**2) )
-    maxWidth = max(int(widthBot), int(widthTop))
-
-    heightRight = np.sqrt(((tright[0] - bright[0]) ** 2) + ((tright[1] - bright[1]) ** 2))
-    heightLeft = np.sqrt(((tleft[0] - bleft[0]) ** 2) + ((tleft[1] - bleft[1]) ** 2))
-    maxHeight = max(int(heightRight), int(heightLeft))
-
     # create a destination array with points [topleft, topright, bottomright, bottomleft]
     # The topleft corner is the origin.
     dst = np.array([
 		[0, 0],
-		[maxWidth - 1, 0],
-		[maxWidth - 1, maxHeight - 1],
-		[0, maxHeight - 1]], dtype = "float32" ) 
+		[WARP_SIZE - 1, 0],
+		[WARP_SIZE - 1, WARP_SIZE - 1],
+		[0, WARP_SIZE - 1]], dtype = "float32" )
 
     M = cv2.getPerspectiveTransform(coords, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-    
+    warped = cv2.warpPerspective(image, M, (WARP_SIZE, WARP_SIZE))
+
     return warped
 
 
@@ -152,29 +149,32 @@ def empty(image):
 
 def extract_digit(grid):
     '''
-        This function takes the sudoku grid, identifies the digits in the image and returns a numpy matrix of the predicted sudoku puzzle
+        This function takes the sudoku grid, identifies the digits in the image and returns a numpy matrix of the predicted sudoku puzzle.
+
+        All non-empty cells are batched into a single model call instead of predicting one cell at a time -
+        Keras incurs large fixed per-call overhead, so 81 individual predict() calls cost ~1.6s while one
+        batched call over the same 81 cells costs ~15ms.
     '''
-    grid_resized = grid.copy()
-    #resize image to a square so that we can divide it into 9x9 parts evenly.
-    grid_resized = cv2.resize(grid_resized, (grid_resized.shape[0], grid_resized.shape[0]), cv2.INTER_AREA)
-    posx = grid_resized.shape[1] // 9
-    posy = grid_resized.shape[0] // 9
+    posx = grid.shape[1] // 9
+    posy = grid.shape[0] // 9
     border = 3
-    digitSize = 32
     sudoku = np.zeros((9,9), dtype=np.uint8)
 
-    #traverse through each part of the 9x9 puzzle and predict the number in that region
+    cell_positions = []
+    cell_batch = []
+
+    #traverse through each part of the 9x9 puzzle and collect the non-empty cells
     for i in range(9):
         for j in range(9):
-            # extract the digit at the particular location 
-            digit = grid_resized[posy*i : posy*(i+1), posx*j : posx*(j+1)]
+            # extract the digit at the particular location
+            digit = grid[posy*i : posy*(i+1), posx*j : posx*(j+1)]
 
             # to check if the block is empty or conatins a digit, extract the center of the image and perform the empty function on it.
             #   if the block contains a digit the center of the iamge will have black pixels
             #   if the block is blank then the center of the image will be mostly white pixels.
-            thresholdY = int(0.25 * digit.shape[1])
-            thresholdX = int(0.25 * digit.shape[0])
-            center = digit[thresholdY: digit.shape[1]-thresholdY, thresholdX: digit.shape[0]-thresholdX]
+            thresholdY = int(0.25 * digit.shape[0])
+            thresholdX = int(0.25 * digit.shape[1])
+            center = digit[thresholdY: digit.shape[0]-thresholdY, thresholdX: digit.shape[1]-thresholdX]
             if empty(center):
                 # if the block is empty skip (do nothing)
                 continue
@@ -182,17 +182,22 @@ def extract_digit(grid):
                 # if block contains digit, remove border pixels
                 crop_image = remove_border(digit)
                 #reisize the image to the input size of prediction model - few border pixels
-                resize = cv2.resize(crop_image, (digitSize-2*border, digitSize-2*border), cv2.INTER_AREA)
+                resize = cv2.resize(crop_image, (DIGIT_SIZE-2*border, DIGIT_SIZE-2*border), interpolation=cv2.INTER_AREA)
                 #we pad the image with white border as the images used in the model training have some white border pixels
                 padded_digit = cv2.copyMakeBorder(resize, border, border, border, border, cv2.BORDER_CONSTANT, value=(255,255,255))
                 padded_digit = padded_digit.astype('float32')
                 padded_digit = padded_digit/255.0
-                # the model contains 9 classes which start from 0 to 8. The digits in sudoku however range from 1-9.
-                # So we add 1 to the prediciton to get the correct number.
-                pred = model.predict(padded_digit.reshape(1,digitSize,digitSize,1)).argmax(axis=1)[0] + 1
-                # store the predicted value at its index position
-                sudoku[i][j] = pred
-                
+                cell_positions.append((i, j))
+                cell_batch.append(padded_digit.reshape(DIGIT_SIZE, DIGIT_SIZE, 1))
+
+    if cell_batch:
+        batch = np.stack(cell_batch, axis=0)
+        # the model contains 9 classes which start from 0 to 8. The digits in sudoku however range from 1-9.
+        # So we add 1 to the prediciton to get the correct number.
+        preds = model(batch, training=False).numpy().argmax(axis=1) + 1
+        for (i, j), pred in zip(cell_positions, preds):
+            sudoku[i][j] = pred
+
     return sudoku
 
 

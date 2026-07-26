@@ -4,3 +4,5 @@ tensorflow>=2.14.0
 scikit-learn>=1.0.0
 h5py>=3.0.0
 Pillow>=8.0.1
+pytest>=7.0.0
+pytest-timeout>=2.0.0
