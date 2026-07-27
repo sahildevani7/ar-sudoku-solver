@@ -63,5 +63,10 @@ CONFIRM_FRAMES = 3       # consecutive identical reads required before locking o
 LOST_FRAMES = 15         # frames the grid may be briefly absent/occluded before releasing lock
 REJECT_COOLDOWN_FRAMES = 45  # frames to ignore a read that already failed to solve, so it isn't retried every frame
 MIN_GIVENS = 17          # the minimum clues a uniquely-solvable sudoku can have; fewer implies a bad read
-                         # (this solver's runtime is highly sensitive to sparse/near-empty grids, so this
-                         # also guards against handing it a pathological case that could hang for a long time)
+
+# Hard ceiling on the exact-cover search. 17 givens only bounds the solution count for a
+# well-formed puzzle - a misread with 17+ duplicate-free but arbitrary digits can still send the
+# search wandering, so MIN_GIVENS reduces the risk rather than removing it. This is the backstop
+# that keeps a bad read from pinning a core: the solver gives up and reports "unsolvable" instead.
+# Real puzzles resolve in milliseconds, so this is generous.
+SOLVER_TIMEOUT_SECONDS = 2.0
